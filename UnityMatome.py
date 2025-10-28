@@ -178,6 +178,7 @@ class FORUNITY_OT_export_selected_fbx(bpy.types.Operator):
         force_keying = scene.forunity_force_start_end_keying
         sample_rate = scene.forunity_sampling_rate
         simplify_val = scene.forunity_simplify
+        move_to_origin = getattr(scene, "forunity_export_move_to_origin", False)
 
         if bpy.ops.object.mode_set.poll():
             try:
@@ -208,6 +209,19 @@ class FORUNITY_OT_export_selected_fbx(bpy.types.Operator):
             fname = sanitize_filename(obj.name) + ".fbx"
             fpath = os.path.join(base_dir, fname)
 
+            moved_objects = {}
+            if move_to_origin:
+                targets_to_move = [obj]
+                if self.include_parent_armature and obj.parent and obj.parent.type == 'ARMATURE':
+                    targets_to_move.append(obj.parent)
+
+                for target in targets_to_move:
+                    if target not in moved_objects:
+                        moved_objects[target] = target.matrix_world.copy()
+                        new_matrix = target.matrix_world.copy()
+                        new_matrix.translation = Vector((0.0, 0.0, 0.0))
+                        target.matrix_world = new_matrix
+
             try:
                 bpy.ops.export_scene.fbx(
                     filepath=fpath,
@@ -235,6 +249,10 @@ class FORUNITY_OT_export_selected_fbx(bpy.types.Operator):
                 exported += 1
             except Exception as e:
                 self.report({'ERROR'}, f"{obj.name} の書き出しに失敗: {e}")
+            finally:
+                if move_to_origin and moved_objects:
+                    for target, matrix in moved_objects.items():
+                        target.matrix_world = matrix
 
         for o in context.view_layer.objects:
             o.select_set(False)
@@ -1017,6 +1035,8 @@ class FORUNITY_PT_main_unified(bpy.types.Panel):
         box.operator("forunity.set_export_dir", text="変更", icon='FILE_FOLDER')
 
         box.prop(scene, "forunity_export_animation", text="Animation")
+        if hasattr(scene, "forunity_export_move_to_origin"):
+            box.prop(scene, "forunity_export_move_to_origin", text="原点で書き出し")
         box.operator("forunity.export_selected_fbx", icon='EXPORT')
 
         # === 2) EEVEE Render ===
@@ -1113,6 +1133,7 @@ class FORUNITY_PT_main_unified(bpy.types.Panel):
 def register_scene_props():
     # FBX Export
     bpy.types.Scene.forunity_export_animation = bpy.props.BoolProperty(name="Animation", default=True)
+    bpy.types.Scene.forunity_export_move_to_origin = bpy.props.BoolProperty(name="原点で書き出す", description="選択中のオブジェクトを一時的に原点へ移動してからFBXを書き出します", default=False)
     bpy.types.Scene.forunity_key_all_bones = bpy.props.BoolProperty(name="Key All Bones", default=True)
     bpy.types.Scene.forunity_nla_strips = bpy.props.BoolProperty(name="NLA Strips", default=True)
     bpy.types.Scene.forunity_all_actions = bpy.props.BoolProperty(name="All Actions", default=True)
@@ -1134,6 +1155,7 @@ def register_scene_props():
 
 def unregister_scene_props():
     del bpy.types.Scene.forunity_export_animation
+    del bpy.types.Scene.forunity_export_move_to_origin
     del bpy.types.Scene.forunity_key_all_bones
     del bpy.types.Scene.forunity_nla_strips
     del bpy.types.Scene.forunity_all_actions
