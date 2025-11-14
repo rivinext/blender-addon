@@ -113,16 +113,20 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
             self.report({'ERROR'}, "バウンディングボックスを計算できませんでした")
             return {'CANCELLED'}
 
-        # 中心座標を計算してEmptyを移動
+        # 中心座標と各軸方向の寸法を算出
         center = (min_coord + max_coord) / 2
-        z_height = max_coord.z - min_coord.z
+        bounding_dimensions = max_coord - min_coord
+        max_dimension = max(bounding_dimensions.x, bounding_dimensions.y, bounding_dimensions.z)
         props.empty_object.location = center
 
         # カメラのOrtho Scaleを調整
-        new_scale = z_height * props.scale_multiplier
-        props.camera_object.data.ortho_scale = new_scale
+        new_ortho_scale = max_dimension * props.scale_multiplier
+        props.camera_object.data.ortho_scale = new_ortho_scale
 
-        self.report({'INFO'}, f"Ortho Scale: {new_scale:.2f}")
+        self.report(
+            {'INFO'},
+            f"Max Dimension: {max_dimension:.2f}, Ortho Scale: {new_ortho_scale:.2f}"
+        )
         return {'FINISHED'}
 
 
