@@ -110,21 +110,19 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
 
         for obj in mesh_objects:
             evaluated_obj = obj.evaluated_get(depsgraph)
-            evaluated_mesh = evaluated_obj.to_mesh()
-            if evaluated_mesh is None:
+            bound_box = getattr(evaluated_obj, "bound_box", None)
+            if not bound_box:
                 continue
-            try:
-                bbox_corners = [
-                    evaluated_obj.matrix_world @ Vector(corner)
-                    for corner in evaluated_mesh.bound_box
-                ]
-                for corner in bbox_corners:
-                    for i in range(3):
-                        min_coord[i] = min(min_coord[i], corner[i])
-                        max_coord[i] = max(max_coord[i], corner[i])
-                has_valid_bbox = True
-            finally:
-                evaluated_obj.to_mesh_clear()
+
+            bbox_corners = [
+                evaluated_obj.matrix_world @ Vector(corner)
+                for corner in bound_box
+            ]
+            for corner in bbox_corners:
+                for i in range(3):
+                    min_coord[i] = min(min_coord[i], corner[i])
+                    max_coord[i] = max(max_coord[i], corner[i])
+            has_valid_bbox = True
 
         if not has_valid_bbox:
             self.report({'ERROR'}, "バウンディングボックスを計算できませんでした")
@@ -175,21 +173,19 @@ def _calculate_bounds(mesh_objects, depsgraph):
 
     for obj in mesh_objects:
         evaluated_obj = obj.evaluated_get(depsgraph)
-        evaluated_mesh = evaluated_obj.to_mesh()
-        if evaluated_mesh is None:
+        bound_box = getattr(evaluated_obj, "bound_box", None)
+        if not bound_box:
             continue
-        try:
-            bbox_corners = [
-                evaluated_obj.matrix_world @ Vector(corner)
-                for corner in evaluated_mesh.bound_box
-            ]
-            for corner in bbox_corners:
-                for i in range(3):
-                    min_coord[i] = min(min_coord[i], corner[i])
-                    max_coord[i] = max(max_coord[i], corner[i])
-            has_valid_bbox = True
-        finally:
-            evaluated_obj.to_mesh_clear()
+
+        bbox_corners = [
+            evaluated_obj.matrix_world @ Vector(corner)
+            for corner in bound_box
+        ]
+        for corner in bbox_corners:
+            for i in range(3):
+                min_coord[i] = min(min_coord[i], corner[i])
+                max_coord[i] = max(max_coord[i], corner[i])
+        has_valid_bbox = True
 
     if not has_valid_bbox:
         return None, None
