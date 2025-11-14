@@ -266,10 +266,17 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
             return {'CANCELLED'}
 
         depsgraph = context.evaluated_depsgraph_get()
-        target_objects = list(props.target_collection.objects)
+        if props.include_children:
+            collection_objects = set(props.target_collection.all_objects)
+        else:
+            collection_objects = set(props.target_collection.objects)
+
+        target_objects = [obj for obj in props.target_collection.objects]
         if not target_objects:
             self.report({'ERROR'}, "コレクション内にオブジェクトがありません")
             return {'CANCELLED'}
+
+        original_hide_render = {obj: obj.hide_render for obj in collection_objects}
 
         original_filepath = scene.render.filepath
         original_selected_names = {obj.name for obj in context.selected_objects}
@@ -291,6 +298,14 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
                     skipped += 1
                     self.report({'WARNING'}, f"{obj.name}: バウンディングボックスを計算できませんでした")
                     continue
+
+                visible_objects = set(mesh_objects)
+                visible_objects.add(obj)
+                if props.include_children:
+                    visible_objects.update(obj.children_recursive)
+
+                for col_obj in collection_objects:
+                    col_obj.hide_render = col_obj not in visible_objects
 
                 props.empty_object.location = center
                 new_ortho_scale = max_dimension * props.scale_multiplier
@@ -321,6 +336,9 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
                 context.view_layer.objects.active = restored_object
             else:
                 context.view_layer.objects.active = None
+
+            for obj, hide_state in original_hide_render.items():
+                obj.hide_render = hide_state
 
         self.report({'INFO'}, f"レンダリング完了: {processed}件処理, {skipped}件スキップ")
         return {'FINISHED'}
@@ -362,6 +380,7 @@ class EMPTY_CAMERA_PT_main(bpy.types.Panel):
         batch_box.prop(props, "target_collection")
         batch_box.prop(props, "include_children")
         batch_box.prop(props, "output_directory")
+        batch_box.label(text="※レンダリング時は対象外オブジェクトを非表示にします")
         batch_box.operator("empty_camera.batch_render", icon='RENDER_STILL')
 
         # 実行ボタン
