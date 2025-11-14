@@ -271,7 +271,13 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
         else:
             collection_objects = set(props.target_collection.objects)
 
-        target_objects = [obj for obj in props.target_collection.objects]
+        direct_objects = list(props.target_collection.objects)
+        direct_objects_set = set(direct_objects)
+        target_objects = [
+            obj
+            for obj in direct_objects
+            if not obj.parent or obj.parent not in direct_objects_set
+        ]
         if not target_objects:
             self.report({'ERROR'}, "コレクション内にオブジェクトがありません")
             return {'CANCELLED'}
