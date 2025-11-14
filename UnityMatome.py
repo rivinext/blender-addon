@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "ForUnity: Unified Suite (All-in-One)",
+    "name": "ForUnity: Unified Suite (Core)",
     "author": "rivi next + ChatGPT + Community",
-    "version": (2, 1, 0),
+    "version": (2, 2, 0),
     "blender": (3, 0, 0),
     "location": "View3D > N-Panel > ForUnity",
-    "description": "統合版: Unity連携・FBX出力・モディファイア・レンダリング・リネーム・カメラ制御など",
+    "description": "統合版: Unity連携・FBX出力・モディファイア・レンダリング・リネームなど",
     "category": "Object",
 }
 
@@ -12,7 +12,6 @@ import bpy
 import os
 import re
 import math
-from collections import deque
 from contextlib import contextmanager
 from mathutils import Vector
 
@@ -601,7 +600,7 @@ class FU_OT_sd_angle_key_set(bpy.types.Operator):
                         skipped += 1
 
         if applied > 0:
-            self.report({'INFO'}, f"キー挿入: {applied}個（{self.angle_value}°）")
+            self.report({'INFO'}, f"キー挿入: {applied}個({self.angle_value}°)")
         else:
             self.report({'WARNING'}, f"キーを挿入できませんでした")
         return {'FINISHED'}
@@ -825,190 +824,6 @@ class OBJECT_OT_remove_prefix_until_2nd_hyphen(bpy.types.Operator):
         return {'FINISHED'}
 
 # =========================================================
-# 9) Empty Camera Controller
-# =========================================================
-class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
-    """Emptyを選択オブジェクトの中心に移動＆カメラOrtho Scale調整"""
-    bl_idname = "empty_camera.move_and_adjust"
-    bl_label = "Move & Adjust"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        scene = context.scene
-        props = scene.empty_camera_props
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
-        if not selected_objects:
-            self.report({'ERROR'}, "メッシュオブジェクトが選択されていません")
-            return {'CANCELLED'}
-        if not props.empty_object:
-            self.report({'ERROR'}, "Emptyが指定されていません")
-            return {'CANCELLED'}
-        if not props.camera_object or props.camera_object.type != 'CAMERA':
-            self.report({'ERROR'}, "カメラが指定されていません")
-            return {'CANCELLED'}
-        if props.camera_object.data.type != 'ORTHO':
-            self.report({'ERROR'}, "カメラはOrthographicである必要があります")
-            return {'CANCELLED'}
-
-        min_coord = Vector((float('inf'), float('inf'), float('inf')))
-        max_coord = Vector((float('-inf'), float('-inf'), float('-inf')))
-        for obj in selected_objects:
-            bbox_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-            for corner in bbox_corners:
-                for i in range(3):
-                    min_coord[i] = min(min_coord[i], corner[i])
-                    max_coord[i] = max(max_coord[i], corner[i])
-
-        center = (min_coord + max_coord) / 2
-        z_height = max_coord.z - min_coord.z
-        props.empty_object.location = center
-        new_scale = z_height * props.scale_multiplier
-        props.camera_object.data.ortho_scale = new_scale
-
-        self.report({'INFO'}, f"Ortho Scale: {new_scale:.2f}")
-        return {'FINISHED'}
-
-class EMPTY_CAMERA_OT_select_empty(bpy.types.Operator):
-    """アクティブオブジェクトをEmptyとして設定"""
-    bl_idname = "empty_camera.select_empty"
-    bl_label = "Pick"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        if context.active_object and context.active_object.type == 'EMPTY':
-            context.scene.empty_camera_props.empty_object = context.active_object
-            self.report({'INFO'}, f"Empty: {context.active_object.name}")
-        else:
-            self.report({'ERROR'}, "アクティブオブジェクトがEmptyではありません")
-        return {'FINISHED'}
-
-class EMPTY_CAMERA_OT_select_camera(bpy.types.Operator):
-    """アクティブオブジェクトをCameraとして設定"""
-    bl_idname = "empty_camera.select_camera"
-    bl_label = "Pick"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        if context.active_object and context.active_object.type == 'CAMERA':
-            context.scene.empty_camera_props.camera_object = context.active_object
-            self.report({'INFO'}, f"Camera: {context.active_object.name}")
-        else:
-            self.report({'ERROR'}, "アクティブオブジェクトがCameraではありません")
-        return {'FINISHED'}
-
-class EmptyCameraProperties(bpy.types.PropertyGroup):
-    empty_object: bpy.props.PointerProperty(
-        name="Empty", type=bpy.types.Object,
-        poll=lambda self, obj: obj.type == 'EMPTY'
-    )
-    camera_object: bpy.props.PointerProperty(
-        name="Camera", type=bpy.types.Object,
-        poll=lambda self, obj: obj.type == 'CAMERA'
-    )
-    scale_multiplier: bpy.props.FloatProperty(
-        name="Multiplier", default=1.2, min=0.1, max=10.0
-    )
-
-# =========================================================
-# 10) Collection Visibility
-# =========================================================
-def get_all_target_collections_from_selection(context):
-    colls = set()
-    for obj in context.selected_objects:
-        for c in obj.users_collection:
-            colls.add(c)
-    return colls
-
-def iter_descendants(ob):
-    q = deque(ob.children)
-    while q:
-        x = q.popleft()
-        yield x
-        for ch in x.children:
-            q.append(ch)
-
-def ensure_view_layer_collections_visible(context, collections):
-    layer = context.view_layer.layer_collection
-    def walk_layer(layer_coll):
-        if layer_coll.collection in collections:
-            if hasattr(layer_coll, "exclude"):
-                layer_coll.exclude = False
-            if hasattr(layer_coll, "holdout"):
-                layer_coll.holdout = False
-            if hasattr(layer_coll, "indirect_only"):
-                layer_coll.indirect_only = False
-        for child in layer_coll.children:
-            walk_layer(child)
-    walk_layer(layer)
-
-class OBJECT_OT_hide_others_in_collection(bpy.types.Operator):
-    """選択中+子孫のみ表示（同コレクション）"""
-    bl_idname = "object.hide_others_in_collection"
-    bl_label = "Hide Others"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        if not context.selected_objects:
-            self.report({'WARNING'}, "選択オブジェクトがありません")
-            return {'CANCELLED'}
-        target_colls = get_all_target_collections_from_selection(context)
-        if not target_colls:
-            self.report({'WARNING'}, "対象コレクションが見つかりません")
-            return {'CANCELLED'}
-
-        ensure_view_layer_collections_visible(context, target_colls)
-        visible_set = set()
-        for sel in context.selected_objects:
-            visible_set.add(sel)
-            for d in iter_descendants(sel):
-                visible_set.add(d)
-
-        for coll in target_colls:
-            for o in coll.objects:
-                if o in visible_set:
-                    try:
-                        o.hide_set(False)
-                    except:
-                        pass
-                    o.hide_render = False
-                else:
-                    try:
-                        o.hide_set(True)
-                    except:
-                        pass
-                    o.hide_render = True
-
-        self.report({'INFO'}, "選択+子孫のみ表示")
-        return {'FINISHED'}
-
-class OBJECT_OT_show_all_in_selected_collections(bpy.types.Operator):
-    """同コレクションの全オブジェクトを表示"""
-    bl_idname = "object.show_all_in_selected_collections"
-    bl_label = "Show All"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        if not context.selected_objects:
-            self.report({'WARNING'}, "選択オブジェクトがありません")
-            return {'CANCELLED'}
-        target_colls = get_all_target_collections_from_selection(context)
-        if not target_colls:
-            self.report({'WARNING'}, "対象コレクションが見つかりません")
-            return {'CANCELLED'}
-
-        ensure_view_layer_collections_visible(context, target_colls)
-        for coll in target_colls:
-            for o in coll.objects:
-                try:
-                    o.hide_set(False)
-                except:
-                    pass
-                o.hide_render = False
-
-        self.report({'INFO'}, "全オブジェクトを表示")
-        return {'FINISHED'}
-
-# =========================================================
 # UI Panel (統合版シンプルUI)
 # =========================================================
 class FORUNITY_PT_main_unified(bpy.types.Panel):
@@ -1104,29 +919,6 @@ class FORUNITY_PT_main_unified(bpy.types.Panel):
         row.operator("object.remove_numeric_suffix", icon='X')
         row.operator("object.remove_prefix_until_2nd_hyphen", icon='OUTLINER_DATA_FONT')
 
-        # === 7) Empty Camera Controller ===
-        box = layout.box()
-        box.label(text="Empty Camera Controller", icon='OUTLINER_OB_EMPTY')
-        props = scene.empty_camera_props
-
-        row = box.row(align=True)
-        row.prop(props, "empty_object", text="")
-        row.operator("empty_camera.select_empty", icon='EYEDROPPER')
-
-        row = box.row(align=True)
-        row.prop(props, "camera_object", text="")
-        row.operator("empty_camera.select_camera", icon='EYEDROPPER')
-
-        box.prop(props, "scale_multiplier", text="Multiplier")
-        box.operator("empty_camera.move_and_adjust", icon='EMPTY_ARROWS')
-
-        # === 8) Collection Visibility ===
-        box = layout.box()
-        box.label(text="Collection Visibility", icon='RESTRICT_VIEW_OFF')
-        row = box.row(align=True)
-        row.operator("object.hide_others_in_collection", icon='HIDE_ON')
-        row.operator("object.show_all_in_selected_collections", icon='RESTRICT_VIEW_OFF')
-
 # =========================================================
 # Scene Properties
 # =========================================================
@@ -1150,9 +942,6 @@ def register_scene_props():
     bpy.types.Scene.forunity_skip_conflicts = bpy.props.BoolProperty(name="Skip if conflict", default=True)
     bpy.types.Scene.forunity_include_children = bpy.props.BoolProperty(name="Include children", default=False)
 
-    # Empty Camera
-    bpy.types.Scene.empty_camera_props = bpy.props.PointerProperty(type=EmptyCameraProperties)
-
 def unregister_scene_props():
     del bpy.types.Scene.forunity_export_animation
     del bpy.types.Scene.forunity_export_move_to_origin
@@ -1167,7 +956,6 @@ def unregister_scene_props():
     del bpy.types.Scene.batch_rename_props
     del bpy.types.Scene.forunity_skip_conflicts
     del bpy.types.Scene.forunity_include_children
-    del bpy.types.Scene.empty_camera_props
 
 # =========================================================
 # Register
@@ -1198,14 +986,6 @@ classes = (
     OBJECT_OT_append_side_suffix,
     OBJECT_OT_remove_numeric_suffix,
     OBJECT_OT_remove_prefix_until_2nd_hyphen,
-    # 9) Empty Camera
-    EmptyCameraProperties,
-    EMPTY_CAMERA_OT_move_and_adjust,
-    EMPTY_CAMERA_OT_select_empty,
-    EMPTY_CAMERA_OT_select_camera,
-    # 10) Collection Visibility
-    OBJECT_OT_hide_others_in_collection,
-    OBJECT_OT_show_all_in_selected_collections,
     # Panel (統合版シンプルUI)
     FORUNITY_PT_main_unified,
 )
