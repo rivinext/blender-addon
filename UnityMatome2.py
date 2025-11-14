@@ -316,8 +316,9 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
             scene.render.filepath = original_filepath
             for obj in context.view_layer.objects:
                 obj.select_set(obj.name in original_selected_names)
-            if original_active in context.view_layer.objects:
-                context.view_layer.objects.active = original_active
+            if original_active and original_active.name in context.view_layer.objects:
+                restored_object = context.view_layer.objects[original_active.name]
+                context.view_layer.objects.active = restored_object
             else:
                 context.view_layer.objects.active = None
 
