@@ -68,16 +68,50 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
             self.report({'ERROR'}, "カメラはOrthographicである必要があります")
             return {'CANCELLED'}
 
-        # 選択オブジェクトのバウンディングボックスを計算
+        # 選択オブジェクトとその階層に含まれるメッシュを収集
+        depsgraph = context.evaluated_depsgraph_get()
+        mesh_objects = []
+        seen_objects = set()
+
+        for root_obj in selected_objects:
+            for obj in (root_obj, *root_obj.children_recursive):
+                if obj in seen_objects:
+                    continue
+                seen_objects.add(obj)
+                if obj.type == 'MESH':
+                    mesh_objects.append(obj)
+
+        if not mesh_objects:
+            self.report({'ERROR'}, "メッシュオブジェクトが見つかりません")
+            return {'CANCELLED'}
+
+        # 階層内の全メッシュのバウンディングボックスを計算
         min_coord = Vector((float('inf'), float('inf'), float('inf')))
         max_coord = Vector((float('-inf'), float('-inf'), float('-inf')))
 
-        for obj in selected_objects:
-            bbox_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-            for corner in bbox_corners:
-                for i in range(3):
-                    min_coord[i] = min(min_coord[i], corner[i])
-                    max_coord[i] = max(max_coord[i], corner[i])
+        has_valid_bbox = False
+
+        for obj in mesh_objects:
+            evaluated_obj = obj.evaluated_get(depsgraph)
+            evaluated_mesh = evaluated_obj.to_mesh()
+            if evaluated_mesh is None:
+                continue
+            try:
+                bbox_corners = [
+                    evaluated_obj.matrix_world @ Vector(corner)
+                    for corner in evaluated_mesh.bound_box
+                ]
+                for corner in bbox_corners:
+                    for i in range(3):
+                        min_coord[i] = min(min_coord[i], corner[i])
+                        max_coord[i] = max(max_coord[i], corner[i])
+                has_valid_bbox = True
+            finally:
+                evaluated_obj.to_mesh_clear()
+
+        if not has_valid_bbox:
+            self.report({'ERROR'}, "バウンディングボックスを計算できませんでした")
+            return {'CANCELLED'}
 
         # 中心座標を計算してEmptyを移動
         center = (min_coord + max_coord) / 2
