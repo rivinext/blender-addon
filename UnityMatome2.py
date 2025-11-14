@@ -8,6 +8,8 @@ bl_info = {
     "category": "Object",
 }
 
+import os
+
 import bpy
 from mathutils import Vector
 
@@ -25,6 +27,21 @@ class EmptyCameraProperties(bpy.types.PropertyGroup):
         name="Camera",
         type=bpy.types.Object,
         poll=lambda self, obj: obj.type == 'CAMERA'
+    )
+    target_collection: bpy.props.PointerProperty(
+        name="Collection",
+        type=bpy.types.Collection,
+        description="バッチ処理対象のコレクション"
+    )
+    include_children: bpy.props.BoolProperty(
+        name="子孫を含める",
+        default=True,
+        description="各オブジェクトの子孫を含めてバウンディングボックスを算出"
+    )
+    output_directory: bpy.props.StringProperty(
+        name="出力フォルダ",
+        subtype='DIR_PATH',
+        description="レンダリング画像の出力先フォルダ"
     )
     scale_multiplier: bpy.props.FloatProperty(
         name="Multiplier",
@@ -130,6 +147,63 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _collect_mesh_objects(root_obj, include_children):
+    """指定したオブジェクトと必要に応じて子孫からメッシュを収集"""
+
+    if include_children:
+        candidates = (root_obj, *root_obj.children_recursive)
+    else:
+        candidates = (root_obj,)
+
+    meshes = []
+    seen = set()
+    for obj in candidates:
+        if obj in seen:
+            continue
+        seen.add(obj)
+        if obj.type == 'MESH':
+            meshes.append(obj)
+    return meshes
+
+
+def _calculate_bounds(mesh_objects, depsgraph):
+    """メッシュオブジェクト集合のワールドバウンディングボックスを算出"""
+
+    min_coord = Vector((float('inf'), float('inf'), float('inf')))
+    max_coord = Vector((float('-inf'), float('-inf'), float('-inf')))
+    has_valid_bbox = False
+
+    for obj in mesh_objects:
+        evaluated_obj = obj.evaluated_get(depsgraph)
+        evaluated_mesh = evaluated_obj.to_mesh()
+        if evaluated_mesh is None:
+            continue
+        try:
+            bbox_corners = [
+                evaluated_obj.matrix_world @ Vector(corner)
+                for corner in evaluated_mesh.bound_box
+            ]
+            for corner in bbox_corners:
+                for i in range(3):
+                    min_coord[i] = min(min_coord[i], corner[i])
+                    max_coord[i] = max(max_coord[i], corner[i])
+            has_valid_bbox = True
+        finally:
+            evaluated_obj.to_mesh_clear()
+
+    if not has_valid_bbox:
+        return None, None
+
+    center = (min_coord + max_coord) / 2
+    bounding_dimensions = max_coord - min_coord
+    max_dimension = max(
+        bounding_dimensions.x,
+        bounding_dimensions.y,
+        bounding_dimensions.z,
+    )
+    return center, max_dimension
+
+
 class EMPTY_CAMERA_OT_select_empty(bpy.types.Operator):
     """アクティブオブジェクトをEmptyとして設定"""
     bl_idname = "empty_camera.select_empty"
@@ -157,6 +231,101 @@ class EMPTY_CAMERA_OT_select_camera(bpy.types.Operator):
             self.report({'INFO'}, f"Camera: {context.active_object.name}")
         else:
             self.report({'ERROR'}, "アクティブオブジェクトがCameraではありません")
+        return {'FINISHED'}
+
+
+class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
+    """指定コレクション内のオブジェクトを順にレンダリング"""
+
+    bl_idname = "empty_camera.batch_render"
+    bl_label = "Batch Render"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        props = scene.empty_camera_props
+
+        if not props.empty_object:
+            self.report({'ERROR'}, "Emptyが指定されていません")
+            return {'CANCELLED'}
+        if not props.camera_object or props.camera_object.type != 'CAMERA':
+            self.report({'ERROR'}, "カメラが指定されていません")
+            return {'CANCELLED'}
+        if props.camera_object.data.type != 'ORTHO':
+            self.report({'ERROR'}, "カメラはOrthographicである必要があります")
+            return {'CANCELLED'}
+        if not props.target_collection:
+            self.report({'ERROR'}, "ターゲットコレクションが指定されていません")
+            return {'CANCELLED'}
+
+        output_dir = bpy.path.abspath(props.output_directory) if props.output_directory else ""
+        if not output_dir:
+            self.report({'ERROR'}, "出力フォルダが指定されていません")
+            return {'CANCELLED'}
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as exc:
+            self.report({'ERROR'}, f"出力フォルダを作成できません: {exc}")
+            return {'CANCELLED'}
+
+        depsgraph = context.evaluated_depsgraph_get()
+        target_objects = list(props.target_collection.objects)
+        if not target_objects:
+            self.report({'ERROR'}, "コレクション内にオブジェクトがありません")
+            return {'CANCELLED'}
+
+        original_filepath = scene.render.filepath
+        original_selected_names = {obj.name for obj in context.selected_objects}
+        original_active = context.view_layer.objects.active
+
+        processed = 0
+        skipped = 0
+
+        try:
+            for index, obj in enumerate(target_objects, start=1):
+                mesh_objects = _collect_mesh_objects(obj, props.include_children)
+                if not mesh_objects:
+                    skipped += 1
+                    self.report({'WARNING'}, f"{obj.name}: メッシュオブジェクトがありません")
+                    continue
+
+                center, max_dimension = _calculate_bounds(mesh_objects, depsgraph)
+                if center is None or max_dimension is None:
+                    skipped += 1
+                    self.report({'WARNING'}, f"{obj.name}: バウンディングボックスを計算できませんでした")
+                    continue
+
+                props.empty_object.location = center
+                new_ortho_scale = max_dimension * props.scale_multiplier
+                props.camera_object.data.ortho_scale = new_ortho_scale
+
+                filename = obj.name.replace("_model", "_image")
+                render_path = os.path.join(output_dir, filename)
+                scene.render.filepath = render_path
+
+                self.report({'INFO'}, f"({index}/{len(target_objects)}) {obj.name}: レンダリング開始")
+                try:
+                    bpy.ops.render.render(write_still=True)
+                except RuntimeError as exc:
+                    skipped += 1
+                    self.report({'ERROR'}, f"{obj.name}: レンダリングに失敗しました - {exc}")
+                    continue
+
+                processed += 1
+        except Exception as exc:  # 想定外のエラー
+            self.report({'ERROR'}, f"処理中にエラーが発生しました: {exc}")
+            return {'CANCELLED'}
+        finally:
+            scene.render.filepath = original_filepath
+            for obj in context.view_layer.objects:
+                obj.select_set(obj.name in original_selected_names)
+            if original_active in context.view_layer.objects:
+                context.view_layer.objects.active = original_active
+            else:
+                context.view_layer.objects.active = None
+
+        self.report({'INFO'}, f"レンダリング完了: {processed}件処理, {skipped}件スキップ")
         return {'FINISHED'}
 
 
@@ -191,16 +360,24 @@ class EMPTY_CAMERA_PT_main(bpy.types.Panel):
         # Multiplier
         box.prop(props, "scale_multiplier", text="Multiplier")
 
+        batch_box = layout.box()
+        batch_box.label(text="Batch Render", icon='RENDER_STILL')
+        batch_box.prop(props, "target_collection")
+        batch_box.prop(props, "include_children")
+        batch_box.prop(props, "output_directory")
+        batch_box.operator("empty_camera.batch_render", icon='RENDER_STILL')
+
         # 実行ボタン
-        box.operator("empty_camera.move_and_adjust", icon='EMPTY_ARROWS')
+        move_box = layout.box()
+        move_box.operator("empty_camera.move_and_adjust", icon='EMPTY_ARROWS')
 
         # 使い方の説明
         box = layout.box()
         box.label(text="使い方:", icon='INFO')
         col = box.column(align=True)
         col.label(text="1. EmptyとCameraを指定")
-        col.label(text="2. メッシュオブジェクトを選択")
-        col.label(text="3. Move & Adjustを実行")
+        col.label(text="2. 個別調整: メッシュオブジェクトを選択してMove & Adjust")
+        col.label(text="3. バッチ: コレクションと出力先を指定してBatch Render")
 
 
 # =========================================================
@@ -211,6 +388,7 @@ classes = (
     EMPTY_CAMERA_OT_move_and_adjust,
     EMPTY_CAMERA_OT_select_empty,
     EMPTY_CAMERA_OT_select_camera,
+    EMPTY_CAMERA_OT_batch_render,
     EMPTY_CAMERA_PT_main,
 )
 
