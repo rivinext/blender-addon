@@ -65,8 +65,10 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
         scene = context.scene
         props = scene.empty_camera_props
 
-        # 選択されたメッシュオブジェクトを取得
-        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        # 選択された対象オブジェクトを取得（メッシュまたはEmptyを許可）
+        selected_objects = [
+            obj for obj in context.selected_objects if obj.type in {'MESH', 'EMPTY'}
+        ]
         if not selected_objects:
             self.report({'ERROR'}, "メッシュオブジェクトが選択されていません")
             return {'CANCELLED'}
@@ -91,7 +93,12 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
         seen_objects = set()
 
         for root_obj in selected_objects:
-            for obj in (root_obj, *root_obj.children_recursive):
+            if root_obj.type == 'EMPTY':
+                candidates = root_obj.children_recursive
+            else:
+                candidates = (root_obj, *root_obj.children_recursive)
+
+            for obj in candidates:
                 if obj in seen_objects:
                     continue
                 seen_objects.add(obj)
@@ -99,6 +106,10 @@ class EMPTY_CAMERA_OT_move_and_adjust(bpy.types.Operator):
                     mesh_objects.append(obj)
 
         if not mesh_objects:
+            # Emptyのみを選択した場合に子メッシュがないケースもここで検出される。
+            # Blender上での手動確認例:
+            # 1) Emptyだけを選択し、子にメッシュがない状態でMove & Adjustを実行 → エラーが表示される。
+            # 2) Empty配下にメッシュを置いた状態で実行 → 正常に処理される。
             self.report({'ERROR'}, "メッシュオブジェクトが見つかりません")
             return {'CANCELLED'}
 
