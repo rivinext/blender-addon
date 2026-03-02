@@ -361,6 +361,126 @@ class EMPTY_CAMERA_OT_batch_render(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMPTY_CAMERA_OT_render_selected(bpy.types.Operator):
+    """選択オブジェクトを順にレンダリング"""
+
+    bl_idname = "empty_camera.render_selected"
+    bl_label = "Render Selected"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        props = scene.empty_camera_props
+
+        if not props.empty_object:
+            self.report({'ERROR'}, "Emptyが指定されていません")
+            return {'CANCELLED'}
+        if not props.camera_object or props.camera_object.type != 'CAMERA':
+            self.report({'ERROR'}, "カメラが指定されていません")
+            return {'CANCELLED'}
+        if props.camera_object.data.type != 'ORTHO':
+            self.report({'ERROR'}, "カメラはOrthographicである必要があります")
+            return {'CANCELLED'}
+        if not props.target_collection:
+            self.report({'ERROR'}, "ターゲットコレクションが指定されていません")
+            return {'CANCELLED'}
+
+        selected_objects = [
+            obj for obj in context.selected_objects if obj.type in {'MESH', 'EMPTY'}
+        ]
+        if not selected_objects:
+            self.report({'ERROR'}, "メッシュオブジェクトが選択されていません")
+            return {'CANCELLED'}
+
+        output_dir = bpy.path.abspath(props.output_directory) if props.output_directory else ""
+        if not output_dir:
+            self.report({'ERROR'}, "出力フォルダが指定されていません")
+            return {'CANCELLED'}
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as exc:
+            self.report({'ERROR'}, f"出力フォルダを作成できません: {exc}")
+            return {'CANCELLED'}
+
+        depsgraph = context.evaluated_depsgraph_get()
+        if props.include_children:
+            collection_objects = set(props.target_collection.all_objects)
+        else:
+            collection_objects = set(props.target_collection.objects)
+        original_hide_render = {obj: obj.hide_render for obj in collection_objects}
+        original_filepath = scene.render.filepath
+        original_selected_names = {obj.name for obj in context.selected_objects}
+        original_active = context.view_layer.objects.active
+
+        processed = 0
+        skipped = 0
+
+        try:
+            for index, obj in enumerate(selected_objects, start=1):
+                include_children = props.include_children or obj.type == 'EMPTY'
+                mesh_objects = _collect_mesh_objects(obj, include_children)
+                if not mesh_objects:
+                    skipped += 1
+                    self.report({'WARNING'}, f"{obj.name}: メッシュオブジェクトがありません")
+                    continue
+
+                center, max_dimension = _calculate_bounds(mesh_objects, depsgraph)
+                if center is None or max_dimension is None:
+                    skipped += 1
+                    self.report({'WARNING'}, f"{obj.name}: バウンディングボックスを計算できませんでした")
+                    continue
+
+                visible_objects = set(mesh_objects)
+                visible_objects.add(obj)
+                if include_children:
+                    visible_objects.update(obj.children_recursive)
+
+                for col_obj in collection_objects:
+                    col_obj.hide_render = col_obj not in visible_objects
+
+                props.empty_object.location = center
+                new_ortho_scale = max_dimension * props.scale_multiplier
+                props.camera_object.data.ortho_scale = new_ortho_scale
+
+                base_name = obj.name
+                if "." in base_name:
+                    name_head, name_tail = base_name.rsplit(".", 1)
+                    if name_tail.isdigit() and len(name_tail) == 3:
+                        base_name = name_head
+                filename = base_name.replace("_model", "_image")
+                render_path = os.path.join(output_dir, filename)
+                scene.render.filepath = render_path
+
+                self.report({'INFO'}, f"({index}/{len(selected_objects)}) {obj.name}: レンダリング開始")
+                try:
+                    bpy.ops.render.render(write_still=True)
+                except RuntimeError as exc:
+                    skipped += 1
+                    self.report({'ERROR'}, f"{obj.name}: レンダリングに失敗しました - {exc}")
+                    continue
+
+                processed += 1
+        except Exception as exc:
+            self.report({'ERROR'}, f"処理中にエラーが発生しました: {exc}")
+            return {'CANCELLED'}
+        finally:
+            scene.render.filepath = original_filepath
+            for view_obj in context.view_layer.objects:
+                view_obj.select_set(view_obj.name in original_selected_names)
+            if original_active and original_active.name in context.view_layer.objects:
+                restored_object = context.view_layer.objects[original_active.name]
+                context.view_layer.objects.active = restored_object
+            else:
+                context.view_layer.objects.active = None
+
+            for col_obj, hide_state in original_hide_render.items():
+                col_obj.hide_render = hide_state
+
+        self.report({'INFO'}, f"レンダリング完了: {processed}件処理, {skipped}件スキップ")
+        return {'FINISHED'}
+
+
 # =========================================================
 # UI Panel
 # =========================================================
@@ -399,6 +519,7 @@ class EMPTY_CAMERA_PT_main(bpy.types.Panel):
         batch_box.prop(props, "output_directory")
         batch_box.label(text="※レンダリング時は対象外オブジェクトを非表示にします")
         batch_box.operator("empty_camera.batch_render", icon='RENDER_STILL')
+        batch_box.operator("empty_camera.render_selected", text="Render Selected", icon='RENDER_STILL')
 
         # 実行ボタン
         move_box = layout.box()
@@ -422,6 +543,7 @@ classes = (
     EMPTY_CAMERA_OT_select_empty,
     EMPTY_CAMERA_OT_select_camera,
     EMPTY_CAMERA_OT_batch_render,
+    EMPTY_CAMERA_OT_render_selected,
     EMPTY_CAMERA_PT_main,
 )
 
